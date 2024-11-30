@@ -2,13 +2,16 @@ import os
 import time
 import numpy as np
 import tensorflow as tf
+tf.compat.v1.enable_eager_execution
 import matplotlib.pyplot as plt
 from tensorflow.keras.layers import Concatenate  # Import Concatenate layer
-from tensorflow.keras.models import load_model
 from tqdm import tqdm
 import plotly.graph_objects as go
 import matplotlib.cm as cm
 import matplotlib.colors as colors
+import cv2
+from keras.layers import ReLU
+from keras.models import load_model
 
 # Ensure the 'materials' directory exists
 os.makedirs('materials', exist_ok=True)
@@ -90,7 +93,7 @@ def render_rays(network_fn, rays_o, rays_d, near, far, N_samples, rand=False, em
 
     return gray_map, depth_map, acc_map
 
-def train_nerf(images, poses, H, W, focal, N_samples=64, N_iters=1000, i_plot=25):
+def train_nerf(images, poses, H, W, focal, N_samples=64, N_iters=2000, i_plot=100):
     model = init_model()
     optimizer = tf.keras.optimizers.Adam(5e-4)
 
@@ -174,54 +177,89 @@ def create_pose_transforms():
 
     return pose_spherical
 
-def render_and_save_novel_views_interactive(model, H, W, focal, N_samples=64):
+def render_and_save_novel_views_interactive(model, H, W, focal, N_samples=64, resolution_multiplier=4):
     pose_spherical = create_pose_transforms()
-    
+
+    # Scale up the resolution
+    H_high_res = H * resolution_multiplier
+    W_high_res = W * resolution_multiplier
+
     # Define view parameters
     view_params = [
         (100, -30, 4),   # Example view 1
         (200, -60, 4.5), # Example view 2
         (300, -45, 3.5)  # Example view 3
     ]
-    
+
     for idx, (theta, phi, radius) in enumerate(view_params):
+        # Generate camera pose
         c2w = pose_spherical(theta, phi, radius)
-        rays_o, rays_d = get_rays(H, W, focal, c2w[:3,:4])
-        
+        rays_o, rays_d = get_rays(H_high_res, W_high_res, focal * resolution_multiplier, c2w[:3, :4])
+
         # Render image and depth map
-        grey_map, depth, acc = render_rays(model, rays_o, rays_d, near=2., far=6., N_samples=N_samples)
-        
-        # Normalize depth for visualization
+        _, depth, _ = render_rays(model, rays_o, rays_d, near=2., far=6., N_samples=N_samples)
+
+        # Normalize depth map to [0, 255] while masking out values 0 and 255
         depth_normalized = (depth - tf.reduce_min(depth)) / (tf.reduce_max(depth) - tf.reduce_min(depth))
-        
-        # Convert normalized depth to RGB using a colormap
-        colormap = cm.get_cmap('viridis')  # Use 'viridis' colormap
-        depth_rgb = (colormap(depth_normalized.numpy())[:, :, :3] * 255).astype(np.uint8)  # Extract RGB values
-        
-        # Create an interactive plot using Plotly
+        depth_normalized = (depth_normalized * 255).numpy().astype(np.uint8)
+        depth_normalized[(depth_normalized == 0) | (depth_normalized == 255)] = 0  # Mask out 0 and 255
+
+        # Generate a color map for visualization
+        depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
+
+        # Add a color bar to the image
+        color_key = np.zeros((50, depth_colored.shape[1], 3), dtype=np.uint8)
+        for i in range(color_key.shape[1]):
+            color_value = int((i / color_key.shape[1]) * 255)
+            color_key[:, i] = cv2.applyColorMap(np.array([[color_value]], dtype=np.uint8), cv2.COLORMAP_JET)
+        depth_colored_with_key = np.vstack((depth_colored, color_key))
+
+        # Save the high-resolution PNG
+        output_image_path = f'materials/depth_map_bgr_{idx}_high_res.png'
+        cv2.imwrite(output_image_path, depth_colored_with_key)
+        print(f"Saved high-resolution depth map with key to {output_image_path}")
+
+        # Create a 3D interactive plot for the rendered object with depth overlay
         fig = go.Figure(data=go.Surface(
-            z=depth_normalized.numpy(),
-            surfacecolor=depth_rgb,
-            colorscale='Viridis',
-            cmin=0,
-            cmax=1,
+            z=depth.numpy(),
+            colorscale='Jet',
+            cmin=2,  # Near clipping plane
+            cmax=6,  # Far clipping plane
+            showscale=True,  # Add a color bar for depth values
+            colorbar=dict(title='Depth (Distance)')
         ))
         fig.update_layout(
-            title=f'Interactive Depth Map (θ={theta}, φ={phi}, r={radius})',
+            title=f'3D Object with Depth Overlay (θ={theta}, φ={phi}, r={radius})',
             scene=dict(
-                xaxis_title='X',
-                yaxis_title='Y',
-                zaxis_title='Depth',
+                xaxis=dict(title='X'),
+                yaxis=dict(title='Y'),
+                zaxis=dict(title='Depth'),
             )
         )
-        
-        # Save the figure as an HTML file
-        fig.write_html(f'materials/interactive_depth_map_{idx}.html')
-        print(f"Saved interactive depth map to materials/interactive_depth_map_{idx}.html")
+
+        # Save the interactive 3D plot as an HTML file
+        output_html_path = f'materials/interactive_object_with_depth_{idx}.html'
+        fig.write_html(output_html_path)
+        print(f"Saved interactive 3D object with depth overlay to {output_html_path}")
+
 
 
 def main():
     download_data()
+    
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                tf.config.set_logical_device_configuration(
+                    gpu,
+                    #[tf.config.LogicalDeviceConfiguration(memory_limit=6000)]  # Set to your desired MB limit
+                )
+            logical_gpus = tf.config.list_logical_devices('GPU')
+            print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+        except RuntimeError as e:
+            print(e)
     
     # Load and preprocess data
     data = np.load('tiny_nerf_data.npz')
@@ -231,10 +269,10 @@ def main():
     H, W = images.shape[1:3]
     
     # Check if model exists; if so, load it
-    model_path = "materials/nerf_model"
+    model_path = "materials/nerf_model.keras"
     if os.path.exists(model_path):
         print("Loading saved model...")
-        model = load_model(model_path, compile=False)
+        model = load_model(model_path, custom_objects={'ReLU': ReLU})
         print("Model loaded successfully.")
     else:
         # Train the NeRF model
