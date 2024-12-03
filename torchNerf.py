@@ -22,7 +22,6 @@ class NeRF(torch.nn.Module):
         x = self.layer3(x)
         return x
 
-
 def posenc(x):
     rets = [x]
     for i in range(L_embed):
@@ -87,7 +86,7 @@ def train_nerf(images, poses, H, W, focal, N_samples=64, N_iters=2000, i_plot=10
   model = model.to(device)
   optimizer = torch.optim.Adam(model.parameters(), lr=lr)
   testimg, testpose = images[imgtest_i], poses[imgtest_i]
-  psnrs = [], iternums = []
+  psnrs, iternums = [], []
 
   for i in tqdm(range(N_iters)):
       img_i = np.random.randint(images.shape[0])
@@ -162,7 +161,7 @@ def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, f
     frames = []
 
     for th in tqdm(np.linspace(0.0, 360.0, 120, endpoint=False)):
-        c2w = pose_spherical(th, -30.0, 11.0)
+        c2w = pose_spherical(th, -30.0, 4.0)
         rays_o, rays_d = get_rays(H, W, focal, c2w[:3, :4])
         rgb, depth, acc = render_rays(model, rays_o, rays_d, near, far, N_samples=N_samples)
         
@@ -170,11 +169,11 @@ def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, f
         rgb = rgb.cpu().detach().numpy()
         frames.append((255 * np.clip(rgb, 0, 1)).astype(np.uint8))
 
-    f = npzName + '.mp4'
+    f = "torch_materials/" + npzName + ".mp4"
     imageio.mimwrite(f, frames, fps=30, quality=7, format='ffmpeg')
 
 if __name__ == "__main__":
-    npzName = "lego_data_blurred_orthogonalized"
+    npzName = "tiny_nerf_data"
     data = np.load(npzName + '.npz')
     images, poses, focal = data['images'], data['poses'], data['focal']
     
@@ -185,9 +184,9 @@ if __name__ == "__main__":
     H, W = images.shape[1:3]
     
     L_embed = 6
-    N_samples = 64, N_iters = 10000, i_plot = 1000
-    lr = 5e-3, imgtest_i = 8
-    near, far = 2.0, 24.0
+    N_samples, N_iters, i_plot = 64, 20000, 1000
+    lr, imgtest_i = 5e-3, 101
+    near, far = 2.0, 6.0
     
     model_path = os.path.join("torch_materials", npzName + ".pth")
     if os.path.exists(model_path):
