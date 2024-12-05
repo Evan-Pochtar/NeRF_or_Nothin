@@ -127,7 +127,7 @@ def train_nerf(images, poses, H, W, focal, N_samples=64, N_iters=2000, i_plot=10
   torch.save(model.state_dict(), "torch_materials/" + npzName + ".pth")
   return model
   
-def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, far=6.0):
+def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, far=6.0, phi=-30.0, radius=4.0):
     print("Video save start")
 
     trans_t = lambda t : np.array([
@@ -161,7 +161,7 @@ def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, f
     frames = []
 
     for th in tqdm(np.linspace(0.0, 360.0, 120, endpoint=False)):
-        c2w = pose_spherical(th, -30.0, 4.0)
+        c2w = pose_spherical(th, phi, radius)
         rays_o, rays_d = get_rays(H, W, focal, c2w[:3, :4])
         rgb, depth, acc = render_rays(model, rays_o, rays_d, near, far, N_samples=N_samples)
         
@@ -171,9 +171,56 @@ def save_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, f
 
     f = "torch_materials/" + npzName + ".mp4"
     imageio.mimwrite(f, frames, fps=30, quality=7, format='ffmpeg')
+    
+def save_depth_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=2.0, far=6.0, phi=-30.0, radius=4.0):
+    print("Video Depth Save Start")
+
+    trans_t = lambda t : np.array([
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, t],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    rot_phi = lambda phi : np.array([
+        [1, 0, 0, 0],
+        [0, np.cos(phi), -np.sin(phi), 0],
+        [0, np.sin(phi), np.cos(phi), 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    rot_theta = lambda th : np.array([
+        [np.cos(th), 0, -np.sin(th), 0],
+        [0, 1, 0, 0],
+        [np.sin(th), 0, np.cos(th), 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float32)
+
+    def pose_spherical(theta, phi, radius):
+        c2w = trans_t(radius)
+        c2w = rot_phi(phi / 180.0 * np.pi) @ c2w
+        c2w = rot_theta(theta / 180.0 * np.pi) @ c2w
+        c2w = np.array([[-1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]]) @ c2w
+        return torch.from_numpy(c2w).float().to(device)
+
+    frames = []
+
+    for th in tqdm(np.linspace(0.0, 360.0, 120, endpoint=False)):
+        c2w = pose_spherical(th, phi, radius)
+        rays_o, rays_d = get_rays(H, W, focal, c2w[:3, :4])
+        rgb, depth, acc = render_rays(model, rays_o, rays_d, near, far, N_samples=N_samples)
+        depth = depth.cpu().detach().numpy()
+        depth_normalized = (depth - np.min(depth)) / (np.max(depth) - np.min(depth))
+        frames.append((255 * np.clip(depth_normalized, 0, 1)).astype(np.uint8))
+
+    f = "torch_materials/" + npzName + "_depth.mp4"
+    imageio.mimwrite(f, frames, fps=30, quality=7, format='ffmpeg')
 
 if __name__ == "__main__":
+    # Npz file path
     npzName = "tiny_nerf_data"
+    
+    # Load Npz data
     data = np.load(npzName + '.npz')
     images, poses, focal = data['images'], data['poses'], data['focal']
     
@@ -183,11 +230,17 @@ if __name__ == "__main__":
 
     H, W = images.shape[1:3]
     
+    # Hyperparameters
     L_embed = 6
     N_samples, N_iters, i_plot = 64, 20000, 1000
     lr, imgtest_i = 5e-3, 101
     near, far = 2.0, 6.0
+    phi, radius = -30.0, 4.0
     
+    # Boolean for training progress plots
+    plot_images = True
+    
+    # If model exists, use existing model, else train
     model_path = os.path.join("torch_materials", npzName + ".pth")
     if os.path.exists(model_path):
         print("Loading model...")
@@ -195,8 +248,8 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(model_path, weights_only=True))
     else:
         print("Training model...")
-        #def train_nerf(images, poses, H, W, focal, N_samples=64, N_iters=2000, i_plot=100):
-        model = train_nerf(images, poses, H, W, focal, N_samples, N_iters, i_plot, lr, imgtest_i, True, npzName, near, far)
+        model = train_nerf(images, poses, H, W, focal, N_samples, N_iters, i_plot, lr, imgtest_i, plot_images, npzName, near, far)
 
-    # Define NeRF model, optimizer
-    save_video(model, H, W, focal, N_samples, npzName, near, far)
+    # Save videos, get depths.
+    save_video(model, H, W, focal, N_samples, npzName, near, far, phi, radius)
+    save_depth_video(model, H, W, focal, N_samples, npzName, near, far, phi, radius)
