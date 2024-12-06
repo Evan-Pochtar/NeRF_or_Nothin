@@ -217,6 +217,9 @@ def save_depth_video(model, H, W, focal, N_samples, npzName="pytorchnerf", near=
     imageio.mimwrite(f, frames, fps=30, quality=7, format='ffmpeg')
 
 if __name__ == "__main__":
+    # Make torch_materials folder if it doesn't exist
+    os.makedirs('torch_materials', exist_ok=True)
+
     # Npz file path
     npzName = "tiny_nerf_data"
     
