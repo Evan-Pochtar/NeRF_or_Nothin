@@ -1,0 +1,10 @@
+bpy
+numpy
+matplotlib
+torch
+tqdm
+imageio
+tensorflow
+keras
+plotly
+opencv-python
